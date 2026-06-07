@@ -1,0 +1,2089 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Whispers of the Island</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1a0a2e; display: flex; align-items: center; justify-content: center; height: 100vh; overflow: hidden; font-family: 'Georgia', serif; }
+  #gameCanvas { display: block; cursor: crosshair; max-width: 100vw; max-height: 100vh; }
+  #ui { position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+  #startScreen {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: linear-gradient(180deg, #1a0a2e 0%, #2d1b4e 50%, #0d2040 100%);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    z-index: 100; cursor: pointer;
+  }
+  #startScreen h1 {
+    font-size: clamp(2rem, 6vw, 4rem); color: #f5e6c8;
+    text-shadow: 0 0 40px rgba(255,220,150,0.6);
+    letter-spacing: 0.15em; margin-bottom: 0.5rem;
+    animation: titleFloat 3s ease-in-out infinite;
+  }
+  #startScreen p { color: #c4b5d4; font-size: clamp(0.9rem, 2.5vw, 1.2rem); letter-spacing: 0.2em; margin-bottom: 3rem; }
+  #startScreen .start-btn {
+    background: rgba(255,220,150,0.15); border: 2px solid rgba(255,220,150,0.5);
+    color: #f5e6c8; padding: 1rem 3rem; font-size: 1.1rem; letter-spacing: 0.2em;
+    border-radius: 50px; animation: pulse 2s ease-in-out infinite;
+    font-family: 'Georgia', serif;
+  }
+  .star { position: absolute; background: white; border-radius: 50%; animation: twinkle linear infinite; }
+  @keyframes titleFloat { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-10px)} }
+  @keyframes pulse { 0%,100%{opacity:0.6;transform:scale(1)} 50%{opacity:1;transform:scale(1.05)} }
+  @keyframes twinkle { 0%,100%{opacity:0.2} 50%{opacity:1} }
+</style>
+</head>
+<body>
+<div id="startScreen">
+  <h1>🌿 Whispers of the Island</h1>
+  <p>a gentle adventure</p>
+  <div class="start-btn">✦ touch to begin ✦</div>
+</div>
+<canvas id="gameCanvas"></canvas>
+
+<script>
+// ============================================================
+// WHISPERS OF THE ISLAND — Full Game Engine
+// ============================================================
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// Responsive sizing
+function resize() {
+  const aspect = 16/9;
+  let w = window.innerWidth, h = window.innerHeight;
+  if (w/h > aspect) { canvas.width = h*aspect; canvas.height = h; }
+  else { canvas.width = w; canvas.height = w/aspect; }
+  canvas.style.width = canvas.width+'px';
+  canvas.style.height = canvas.height+'px';
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ============================================================
+// AUDIO ENGINE
+// ============================================================
+let audioCtx = null;
+let masterGain, reverbGain, dryGain;
+let musicInterval = null;
+let ambienceInterval = null;
+
+function initAudio() {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = 0.5;
+  masterGain.connect(audioCtx.destination);
+
+  // Reverb via convolver simulation
+  reverbGain = audioCtx.createGain();
+  reverbGain.gain.value = 0.3;
+  reverbGain.connect(masterGain);
+  dryGain = audioCtx.createGain();
+  dryGain.gain.value = 0.7;
+  dryGain.connect(masterGain);
+
+  startAmbientMusic();
+}
+
+const PENTATONIC = [261.63, 293.66, 329.63, 392.00, 440.00, 523.25, 587.33, 659.25, 783.99, 880.00];
+const PENTATONIC_LOW = [130.81, 146.83, 164.81, 196.00, 220.00];
+
+function playNote(freq, duration, vol=0.15, type='sine', delay=0) {
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain);
+  gain.connect(dryGain);
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, audioCtx.currentTime + delay);
+  gain.gain.setValueAtTime(0, audioCtx.currentTime + delay);
+  gain.gain.linearRampToValueAtTime(vol, audioCtx.currentTime + delay + 0.05);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + delay + duration);
+  osc.start(audioCtx.currentTime + delay);
+  osc.stop(audioCtx.currentTime + delay + duration + 0.1);
+}
+
+function playChime(freqs, vol=0.12) {
+  freqs.forEach((f,i) => playNote(f, 1.5, vol, 'sine', i*0.18));
+}
+
+function playWisdomChime() {
+  const melody = [523.25, 659.25, 783.99, 1046.50];
+  melody.forEach((f,i) => playNote(f, 2, 0.18, 'sine', i*0.25));
+}
+
+function playSnap() {
+  if (!audioCtx) return;
+  const buf = audioCtx.createBuffer(1, audioCtx.sampleRate*0.1, audioCtx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i=0; i<data.length; i++) data[i] = (Math.random()*2-1) * Math.pow(1-i/data.length, 8);
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  const g = audioCtx.createGain(); g.gain.value = 0.4;
+  src.connect(g); g.connect(masterGain);
+  src.start();
+}
+
+function playDing(freq=880) {
+  playNote(freq, 1.2, 0.2, 'sine');
+  playNote(freq*2, 0.8, 0.08, 'sine', 0.05);
+}
+
+function playBwop() {
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  osc.connect(g); g.connect(masterGain);
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(220, audioCtx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(110, audioCtx.currentTime+0.3);
+  g.gain.setValueAtTime(0.2, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+0.35);
+  osc.start(); osc.stop(audioCtx.currentTime+0.4);
+}
+
+function playFootstep() {
+  if (!audioCtx || Math.random()>0.3) return;
+  const freq = 180 + Math.random()*40;
+  playNote(freq, 0.08, 0.06, 'sine');
+}
+
+function playWhimper() {
+  if (!audioCtx) return;
+  const base = 600 + Math.random()*200;
+  const osc = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  osc.connect(g); g.connect(masterGain);
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(base, audioCtx.currentTime);
+  osc.frequency.linearRampToValueAtTime(base*0.85, audioCtx.currentTime+0.4);
+  g.gain.setValueAtTime(0.08, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+0.5);
+  osc.start(); osc.stop(audioCtx.currentTime+0.6);
+}
+
+function startAmbientMusic() {
+  let beat = 0;
+  musicInterval = setInterval(() => {
+    const isNight = game.timeOfDay > 0.7 || game.timeOfDay < 0.1;
+    const vol = isNight ? 0.08 : 0.12;
+    const scale = isNight ? PENTATONIC_LOW : PENTATONIC;
+
+    if (Math.random() < 0.6) {
+      const note = scale[Math.floor(Math.random()*scale.length)];
+      const mult = isNight ? 1 : (Math.random()>0.5 ? 2 : 1);
+      playNote(note*mult, 2+Math.random()*2, vol, 'sine');
+    }
+    if (beat % 4 === 0 && Math.random()<0.5) {
+      const low = PENTATONIC_LOW[Math.floor(Math.random()*PENTATONIC_LOW.length)];
+      playNote(low, 4, 0.06, 'triangle');
+    }
+    beat++;
+  }, 1200);
+
+  ambienceInterval = setInterval(() => {
+    if (Math.random()<0.3) {
+      const freq = 1200+Math.random()*800;
+      playNote(freq, 0.5+Math.random(), 0.04, 'sine');
+    }
+  }, 3000);
+}
+
+// ============================================================
+// GAME STATE
+// ============================================================
+const W = () => canvas.width;
+const H = () => canvas.height;
+const SC = () => canvas.width / 800; // scale factor
+
+const game = {
+  state: 'playing', // playing, minigame, wisdom, ending
+  timeOfDay: 0.3,
+  timeSpeed: 0.00008,
+  savedAnimals: 0,
+  totalAnimals: 4,
+  keys: {},
+  mouse: { x:0, y:0, down:false },
+  camera: { x:0, y:0 },
+  particles: [],
+  floatingTexts: [],
+  currentMinigame: null,
+  currentWisdom: null,
+  wisdomTimer: 0,
+};
+
+// ============================================================
+// WORLD GENERATION
+// ============================================================
+const WORLD = { w: 3200, h: 2400 };
+
+function noise(x, y, seed=0) {
+  const n = Math.sin(x*127.1+y*311.7+seed*74.3)*43758.5453;
+  return n - Math.floor(n);
+}
+
+function smoothNoise(x, y, seed=0) {
+  let v = 0, amp = 1, freq = 1, max = 0;
+  for (let o=0; o<4; o++) {
+    v += noise(x*freq, y*freq, seed) * amp;
+    max += amp; amp *= 0.5; freq *= 2;
+  }
+  return v/max;
+}
+
+// Island shape — generous ellipse so all animal zones are solidly on land
+function isLand(wx, wy) {
+  const cx = WORLD.w/2, cy = WORLD.h/2;
+  const dx = (wx-cx)/(WORLD.w*0.44);
+  const dy = (wy-cy)/(WORLD.h*0.42);
+  const dist = Math.sqrt(dx*dx+dy*dy);
+  const n = smoothNoise(wx*0.0015, wy*0.0015, 42) * 0.10;
+  return dist + n < 0.90;
+}
+
+// Precompute island cells
+const GRID = 20;
+const landMap = [];
+for (let gy=0; gy<WORLD.h/GRID+1; gy++) {
+  landMap[gy] = [];
+  for (let gx=0; gx<WORLD.w/GRID+1; gx++) {
+    landMap[gy][gx] = isLand(gx*GRID, gy*GRID);
+  }
+}
+
+function isLandFast(wx, wy) {
+  const gx = Math.floor(wx/GRID), gy = Math.floor(wy/GRID);
+  if (gx<0||gy<0||gx>=WORLD.w/GRID||gy>=WORLD.h/GRID) return false;
+  return landMap[gy][gx];
+}
+
+// Trees
+const trees = [];
+for (let i=0; i<220; i++) {
+  const x = 100 + Math.random()*(WORLD.w-200);
+  const y = 100 + Math.random()*(WORLD.h-200);
+  if (isLand(x,y) && Math.hypot(x-WORLD.w/2,y-WORLD.h/2)>160) {
+    trees.push({ x, y, size: 18+Math.random()*20, hue: 100+Math.random()*40 });
+  }
+}
+
+// Flowers
+const flowers = [];
+for (let i=0; i<600; i++) {
+  const x = Math.random()*WORLD.w, y = Math.random()*WORLD.h;
+  if (isLand(x,y)) {
+    flowers.push({ x, y, hue: Math.random()*360, size: 3+Math.random()*4, phase: Math.random()*Math.PI*2 });
+  }
+}
+
+// Rocks
+const rocks = [];
+for (let i=0; i<120; i++) {
+  const x = Math.random()*WORLD.w, y = Math.random()*WORLD.h;
+  if (isLand(x,y)) rocks.push({ x, y, w: 10+Math.random()*20, h: 8+Math.random()*12 });
+}
+
+// Gloom zones — placed at safe interior positions (verified land fractions of world)
+// Island center is WORLD.w/2, WORLD.h/2. Safe range is roughly 30-70% of world dims.
+const gloomZones = [
+  { x: Math.round(WORLD.w*0.30), y: Math.round(WORLD.h*0.28), r: 120 }, // top-left
+  { x: Math.round(WORLD.w*0.70), y: Math.round(WORLD.h*0.28), r: 115 }, // top-right
+  { x: Math.round(WORLD.w*0.28), y: Math.round(WORLD.h*0.72), r: 120 }, // bottom-left
+  { x: Math.round(WORLD.w*0.72), y: Math.round(WORLD.h*0.72), r: 115 }, // bottom-right
+];
+
+// Band-aid item — near center of island
+const bandAid = { x: Math.round(WORLD.w*0.50), y: Math.round(WORLD.h*0.48), collected: false, sparkle: 0 };
+
+// Vine snip points for fox
+const vineSnipPoints = [
+  { dx:-25, dy:10 }, { dx:15, dy:-15 }, { dx:-10, dy:-25 },
+  { dx:20, dy:20 }, { dx:-20, dy:-5 }
+];
+
+// Shell puzzle pieces
+const shellPieces = [
+  { id:0, correctX:0, correctY:-18, curX:-50, curY:-60, startX:-50, startY:-60, placed:false },
+  { id:1, correctX:14, correctY:8, curX:50, curY:-30, startX:50, startY:-30, placed:false },
+  { id:2, correctX:-14, correctY:8, curX:-55, curY:30, startX:-55, startY:30, placed:false },
+  { id:3, correctX:0, correctY:20, curX:55, curY:50, startX:55, startY:50, placed:false },
+];
+
+// ============================================================
+// ANIMALS
+// ============================================================
+const animals = [
+  {
+    id: 0, name: 'Pip', type: 'bird',
+    x: gloomZones[0].x, y: gloomZones[0].y,
+    saved: false, wx: 0, wy: 0, phase: 0,
+    emotion: 'crying', interacted: false,
+    wisdom: "Even broken wings remember\nhow to dream of the sky. 🌤️",
+    helpText: "Find the band-aid and bring it to Pip!",
+    bandAidCollected: false, bandAidApplied: false, applyProgress: 0,
+    wingBroken: true,
+  },
+  {
+    id: 1, name: 'Mochi', type: 'bunny',
+    x: gloomZones[1].x, y: gloomZones[1].y,
+    saved: false, wx: 0, wy: 0, phase: 0,
+    emotion: 'crying', interacted: false,
+    wisdom: "Sometimes courage isn't running—\nit's staying beside someone\nuntil the dark feels smaller. 🌙",
+    helpText: "Walk slowly — escort Mochi to the light!",
+    escortProgress: 0, escorting: false, tooFast: false,
+  },
+  {
+    id: 2, name: 'Koko', type: 'turtle',
+    x: gloomZones[2].x, y: gloomZones[2].y,
+    saved: false, wx: 0, wy: 0, phase: 0,
+    emotion: 'crying', interacted: false,
+    wisdom: "You don't have to be unbroken\nto be whole. Every crack\nis part of your story. 🐢",
+    helpText: "Put Koko's shell back together!",
+    shellPieces: shellPieces.map(p=>({...p})),
+    dragging: null,
+  },
+  {
+    id: 3, name: 'Sora', type: 'fox',
+    x: gloomZones[3].x, y: gloomZones[3].y,
+    saved: false, wx: 0, wy: 0, phase: 0,
+    emotion: 'crying', interacted: false,
+    wisdom: "The things that held you back\nwere never stronger than the moment\nyou decided to be free. 🦊",
+    helpText: "Click each glowing vine to set Sora free!",
+    snipPoints: vineSnipPoints.map(p=>({...p, cut:false, lit:0})),
+    currentSnip: 0,
+  },
+];
+
+// ============================================================
+// PLAYER
+// ============================================================
+const player = {
+  x: WORLD.w/2, y: WORLD.h/2,
+  vx: 0, vy: 0,
+  speed: 90,       // gentle walk speed
+  sprintSpeed: 320, // hold Q + direction to run
+  facing: 1,
+  moving: false,
+  sprinting: false,
+  stepPhase: 0,
+  dustTimer: 0,
+  companions: [], // saved animals that follow
+};
+
+// ============================================================
+// SKY / COLOR UTILS
+// ============================================================
+function getSkyColor() {
+  const t = game.timeOfDay;
+  if (t < 0.2) return lerpColor('#0d1b3e','#f4a261',t/0.2);
+  if (t < 0.35) return lerpColor('#f4a261','#87ceeb',( t-0.2)/0.15);
+  if (t < 0.65) return '#87ceeb';
+  if (t < 0.75) return lerpColor('#87ceeb','#f4a261',(t-0.65)/0.1);
+  if (t < 0.85) return lerpColor('#f4a261','#1a0a2e',(t-0.75)/0.1);
+  return '#0d1b3e';
+}
+
+function getGroundColor() {
+  const t = game.timeOfDay;
+  const isNight = t > 0.8 || t < 0.15;
+  if (isNight) return '#1d2e1a';
+  if (t<0.2||t>0.75) return '#4a7c3f';
+  return '#5a9e4a';
+}
+
+function lerpColor(c1,c2,t) {
+  const r1=parseInt(c1.slice(1,3),16),g1=parseInt(c1.slice(3,5),16),b1=parseInt(c1.slice(5,7),16);
+  const r2=parseInt(c2.slice(1,3),16),g2=parseInt(c2.slice(3,5),16),b2=parseInt(c2.slice(7)?c2.slice(5,7):c2.slice(5,7),16);
+  const r=Math.round(r1+(r2-r1)*t),g=Math.round(g1+(g2-g1)*t),b=Math.round(b1+(b2-b1)*t);
+  return `rgb(${r},${g},${b})`;
+}
+
+function getSunsetHaze() {
+  const t = game.timeOfDay;
+  if (t>0.6&&t<0.9) return Math.sin((t-0.6)/0.3*Math.PI)*0.25;
+  return 0;
+}
+
+// ============================================================
+// DRAWING: WORLD
+// ============================================================
+function drawSky(time) {
+  const sky = getSkyColor();
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W(), H());
+
+  // Stars at night
+  const starAlpha = game.timeOfDay > 0.75 || game.timeOfDay < 0.2
+    ? Math.min(1,(game.timeOfDay>0.75?(game.timeOfDay-0.75)/0.1:(0.2-game.timeOfDay)/0.1)) : 0;
+  if (starAlpha > 0) {
+    ctx.save(); ctx.globalAlpha = starAlpha;
+    for (let i=0; i<80; i++) {
+      const sx = (Math.sin(i*23.7)*0.5+0.5)*W();
+      const sy = (Math.sin(i*41.3)*0.5+0.5)*H()*0.55;
+      const r = 0.5+Math.sin(time*0.5+i)*0.5+0.5;
+      ctx.fillStyle = 'white';
+      ctx.beginPath(); ctx.arc(sx,sy,r*SC(),0,Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // Sun/Moon
+  const sunX = W()*0.75, sunY = H()*(0.15+Math.sin(game.timeOfDay*Math.PI)*0.4);
+  const isNight = game.timeOfDay > 0.8 || game.timeOfDay < 0.15;
+  if (!isNight) {
+    ctx.save();
+    const grad = ctx.createRadialGradient(sunX,sunY,0,sunX,sunY,40*SC());
+    grad.addColorStop(0,'rgba(255,240,180,0.8)');
+    grad.addColorStop(1,'rgba(255,200,100,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(sunX,sunY,40*SC(),0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#ffe87a';
+    ctx.beginPath(); ctx.arc(sunX,sunY,14*SC(),0,Math.PI*2); ctx.fill();
+    ctx.restore();
+  } else {
+    ctx.fillStyle = '#e8e8d0';
+    ctx.beginPath(); ctx.arc(sunX,sunY,12*SC(),0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = getSkyColor();
+    ctx.beginPath(); ctx.arc(sunX+8*SC(),sunY-4*SC(),10*SC(),0,Math.PI*2); ctx.fill();
+  }
+
+  // Ocean horizon
+  const horizonY = H()*0.45;
+  const waveGrad = ctx.createLinearGradient(0,horizonY,0,H());
+  if (game.timeOfDay>0.3&&game.timeOfDay<0.7) {
+    waveGrad.addColorStop(0,'rgba(100,180,220,0.9)');
+    waveGrad.addColorStop(1,'rgba(60,130,180,0.9)');
+  } else {
+    waveGrad.addColorStop(0,'rgba(30,50,100,0.9)');
+    waveGrad.addColorStop(1,'rgba(10,20,60,0.9)');
+  }
+}
+
+function worldToScreen(wx, wy) {
+  const sc = SC();
+  return {
+    x: (wx - game.camera.x) * sc + W()/2,
+    y: (wy - game.camera.y) * sc + H()/2
+  };
+}
+
+function screenToWorld(sx, sy) {
+  const sc = SC();
+  return {
+    x: (sx - W()/2) / sc + game.camera.x,
+    y: (sy - H()/2) / sc + game.camera.y
+  };
+}
+
+function inView(wx, wy, margin=100) {
+  const s = worldToScreen(wx, wy);
+  return s.x > -margin && s.x < W()+margin && s.y > -margin && s.y < H()+margin;
+}
+
+function drawOcean(time) {
+  const waves = 6;
+  for (let i=0; i<waves; i++) {
+    const y = H()*0.42 + i*(H()*0.1);
+    const alpha = 0.08 - i*0.01;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    for (let x=0; x<W(); x+=8) {
+      const wy = y + Math.sin(x*0.02 + time + i*0.7) * 4*SC() + Math.sin(x*0.05 + time*1.3 + i) * 2*SC();
+      ctx.lineTo(x, wy);
+    }
+    ctx.lineTo(W(), H()); ctx.lineTo(0, H()); ctx.closePath();
+    ctx.fillStyle = game.timeOfDay>0.3&&game.timeOfDay<0.7 ? '#64b4dc' : '#1e3264';
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawIsland(time) {
+  const sc = SC();
+
+  // Draw water/ocean base first
+  ctx.save();
+  const oceanGrad = ctx.createLinearGradient(0,H()*0.3,0,H());
+  if (game.timeOfDay>0.3&&game.timeOfDay<0.7) {
+    oceanGrad.addColorStop(0,'#7ec8e3'); oceanGrad.addColorStop(1,'#3a82b5');
+  } else {
+    oceanGrad.addColorStop(0,'#1e3264'); oceanGrad.addColorStop(1,'#0d1b40');
+  }
+  ctx.fillStyle = oceanGrad;
+  ctx.fillRect(0, H()*0.3, W(), H()*0.7);
+  ctx.restore();
+
+  // Draw ground tiles
+  const camX = game.camera.x, camY = game.camera.y;
+  const tileSize = GRID * sc;
+  const startGX = Math.floor((camX - W()/(2*sc)) / GRID) - 1;
+  const startGY = Math.floor((camY - H()/(2*sc)) / GRID) - 1;
+  const endGX = startGX + Math.ceil(W()/tileSize) + 3;
+  const endGY = startGY + Math.ceil(H()/tileSize) + 3;
+
+  const groundBase = getGroundColor();
+  const isEvening = (game.timeOfDay>0.6&&game.timeOfDay<0.85);
+
+  for (let gy=startGY; gy<=endGY; gy++) {
+    for (let gx=startGX; gx<=endGX; gx++) {
+      if (gx<0||gy<0||gx>=WORLD.w/GRID||gy>=WORLD.h/GRID) continue;
+      if (!landMap[gy] || !landMap[gy][gx]) continue;
+
+      const wx = gx*GRID, wy = gy*GRID;
+      const s = worldToScreen(wx, wy);
+
+      // Check gloom
+      let inGloom = 0;
+      for (let a of animals) {
+        if (!a.saved) {
+          const dist = Math.hypot(wx+GRID/2 - a.x, wy+GRID/2 - a.y);
+          const gz = gloomZones[a.id];
+          if (dist < gz.r) inGloom = Math.max(inGloom, 1 - dist/gz.r);
+        }
+      }
+
+      let col = groundBase;
+      if (inGloom > 0) {
+        // Darken for gloom
+        const dark = isEvening ? '#2a2040' : '#1a2a18';
+        col = lerpColorRaw(groundBase, dark, inGloom*0.7);
+      } else if (isEvening) {
+        col = lerpColorRaw(groundBase, '#c4703a', 0.15);
+      }
+
+      // Grass variation
+      const n = smoothNoise(gx*0.3, gy*0.3, 7);
+      const lighten = n * 0.1;
+
+      ctx.fillStyle = col;
+      ctx.fillRect(s.x-0.5, s.y-0.5, tileSize+1, tileSize+1);
+
+      // Shore edge tiles
+      const neighbors = [landMap[gy-1]?.[gx], landMap[gy+1]?.[gx], landMap[gy]?.[gx-1], landMap[gy]?.[gx+1]];
+      if (neighbors.some(n=>!n)) {
+        ctx.fillStyle = 'rgba(245,230,180,0.4)';
+        ctx.fillRect(s.x, s.y, tileSize, tileSize);
+      }
+    }
+  }
+}
+
+function lerpColorRaw(c1, c2, t) {
+  // parse rgb or hex
+  const parse = c => {
+    if (c.startsWith('rgb')) {
+      const m = c.match(/(\d+),\s*(\d+),\s*(\d+)/);
+      return [+m[1],+m[2],+m[3]];
+    }
+    return [parseInt(c.slice(1,3),16),parseInt(c.slice(3,5),16),parseInt(c.slice(5,7),16)];
+  };
+  const [r1,g1,b1]=parse(c1), [r2,g2,b2]=parse(c2);
+  return `rgb(${Math.round(r1+(r2-r1)*t)},${Math.round(g1+(g2-g1)*t)},${Math.round(b1+(b2-b1)*t)})`;
+}
+
+function drawTrees(time) {
+  const sc = SC();
+  for (const t of trees) {
+    if (!inView(t.x, t.y, 60)) continue;
+    const s = worldToScreen(t.x, t.y);
+    const sway = Math.sin(time*0.7 + t.x*0.01) * 2 * sc;
+    const sz = t.size * sc;
+
+    // Shadow
+    ctx.save();
+    ctx.globalAlpha = 0.15;
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.ellipse(s.x+sway*0.3, s.y+sz*0.2, sz*0.6, sz*0.2, 0, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+
+    // Trunk
+    ctx.fillStyle = '#8B6040';
+    ctx.fillRect(s.x-2*sc+sway*0.2, s.y-sz*0.3, 4*sc, sz*0.5);
+
+    // Foliage layers
+    const hue = t.hue + (game.timeOfDay>0.7||game.timeOfDay<0.2 ? -20 : 0);
+    for (let layer=2; layer>=0; layer--) {
+      const ly = s.y - sz*(0.3+layer*0.3) + sway;
+      const lsz = sz*(1.2-layer*0.2);
+      const sat = 55+layer*10, lig = 35+layer*8;
+      ctx.fillStyle = `hsl(${hue},${sat}%,${lig}%)`;
+      ctx.beginPath();
+      ctx.arc(s.x+sway*0.5, ly, lsz*0.7, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+}
+
+function drawFlowers(time) {
+  const sc = SC();
+  for (const f of flowers) {
+    if (!inView(f.x, f.y, 20)) continue;
+    const s = worldToScreen(f.x, f.y);
+    const bob = Math.sin(time + f.phase) * 1 * sc;
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = `hsl(${f.hue},80%,70%)`;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y+bob, f.size*sc, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = '#fffde0';
+    ctx.beginPath();
+    ctx.arc(s.x, s.y+bob, f.size*sc*0.35, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawRocks() {
+  const sc = SC();
+  for (const r of rocks) {
+    if (!inView(r.x, r.y)) continue;
+    const s = worldToScreen(r.x, r.y);
+    ctx.save();
+    ctx.fillStyle = '#a0a0a0';
+    ctx.beginPath();
+    ctx.ellipse(s.x, s.y, r.w*sc*0.5, r.h*sc*0.5, 0.3, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = '#c0c0c0';
+    ctx.beginPath();
+    ctx.ellipse(s.x-r.w*sc*0.1, s.y-r.h*sc*0.1, r.w*sc*0.3, r.h*sc*0.25, 0.3, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawGloomZones(time) {
+  const sc = SC();
+  for (let i=0; i<animals.length; i++) {
+    const a = animals[i];
+    if (a.saved) continue;
+    const gz = gloomZones[i];
+    const s = worldToScreen(gz.x, gz.y);
+    const r = gz.r * sc;
+    const pulse = 1 + Math.sin(time*2)*0.05;
+
+    const grad = ctx.createRadialGradient(s.x,s.y,r*0.3*pulse,s.x,s.y,r*1.3*pulse);
+    grad.addColorStop(0,'rgba(20,10,40,0.6)');
+    grad.addColorStop(0.6,'rgba(20,10,40,0.3)');
+    grad.addColorStop(1,'rgba(20,10,40,0)');
+    ctx.save();
+    ctx.globalAlpha = 0.8;
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(s.x,s.y,r*1.3*pulse,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+
+    // Dark mist particles
+    for (let p=0; p<5; p++) {
+      const angle = (time*0.3 + p*1.26 + i*0.7);
+      const dist = r * (0.4+Math.sin(time+p)*0.3);
+      const px = s.x + Math.cos(angle)*dist;
+      const py = s.y + Math.sin(angle)*dist;
+      ctx.save(); ctx.globalAlpha=0.15;
+      ctx.fillStyle='#4a0070';
+      ctx.beginPath(); ctx.arc(px,py,6*sc,0,Math.PI*2); ctx.fill();
+      ctx.restore();
+    }
+  }
+}
+
+function drawBandAid(time) {
+  if (bandAid.collected || animals[0].saved) return;
+  if (!inView(bandAid.x, bandAid.y)) return;
+  const s = worldToScreen(bandAid.x, bandAid.y);
+  const sc = SC();
+  const bob = Math.sin(time*2)*3*sc;
+
+  // Sparkle
+  bandAid.sparkle += 0.05;
+  for (let i=0; i<6; i++) {
+    const a = bandAid.sparkle + i*Math.PI/3;
+    const dist = (8+Math.sin(bandAid.sparkle*2+i)*3)*sc;
+    ctx.save(); ctx.globalAlpha=0.6+Math.sin(bandAid.sparkle+i)*0.4;
+    ctx.fillStyle='#ffe44a';
+    ctx.beginPath();
+    ctx.arc(s.x+Math.cos(a)*dist, s.y+bob+Math.sin(a)*dist, 2*sc,0,Math.PI*2);
+    ctx.fill(); ctx.restore();
+  }
+  // Band-aid body
+  ctx.save();
+  ctx.translate(s.x, s.y+bob);
+  ctx.rotate(0.3);
+  ctx.fillStyle='#f4c2a0'; ctx.strokeStyle='#d49070'; ctx.lineWidth=1*sc;
+  ctx.beginPath(); roundRect(ctx,-12*sc,-5*sc,24*sc,10*sc,3*sc); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#e8a888';
+  ctx.beginPath(); roundRect(ctx,-5*sc,-5*sc,10*sc,10*sc,1*sc); ctx.fill();
+  ctx.fillStyle='rgba(255,255,255,0.7)';
+  for(let d=0;d<3;d++){ctx.beginPath();ctx.arc(-2*sc+d*2*sc,0,1*sc,0,Math.PI*2);ctx.fill();}
+  ctx.restore();
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y);
+  ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y);
+  ctx.closePath();
+}
+
+// ============================================================
+// DRAWING: ANIMALS
+// ============================================================
+function drawBird(ctx, x, y, sc, animal, time) {
+  const bob = Math.sin(time*2+animal.phase)*2*sc;
+  const sad = !animal.saved;
+
+  ctx.save(); ctx.translate(x, y+bob);
+
+  // Body
+  ctx.fillStyle = sad ? '#8898b0' : '#6ab0f0';
+  ctx.beginPath(); ctx.ellipse(0,0,14*sc,10*sc,0,0,Math.PI*2); ctx.fill();
+
+  // Wings
+  if (animal.wingBroken && !animal.bandAidApplied) {
+    // Broken left wing
+    ctx.save(); ctx.rotate(-0.3);
+    ctx.fillStyle='#7a8a9a';
+    ctx.beginPath(); ctx.ellipse(-14*sc,-2*sc,10*sc,5*sc,-0.5,0,Math.PI*2); ctx.fill();
+    // Break marks
+    ctx.strokeStyle='#ff6060'; ctx.lineWidth=1.5*sc;
+    ctx.beginPath(); ctx.moveTo(-18*sc,-5*sc); ctx.lineTo(-12*sc,1*sc); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-16*sc,-3*sc); ctx.lineTo(-20*sc,0); ctx.stroke();
+    ctx.restore();
+    // Right wing normal-ish
+    ctx.fillStyle='#8898b0';
+    ctx.beginPath(); ctx.ellipse(14*sc,-2*sc,10*sc,5*sc,0.3,0,Math.PI*2); ctx.fill();
+  } else if (animal.bandAidApplied) {
+    // Healed wings (or partially healed)
+    const prog = animal.applyProgress;
+    ctx.fillStyle = prog>0.5 ? '#6ab0f0' : '#8898b0';
+    ctx.beginPath(); ctx.ellipse(-14*sc,(-2-Math.sin(time*3)*3*Math.min(prog,1))*sc, 12*sc,6*sc,-0.2,0,Math.PI*2); ctx.fill();
+    if (prog>0.7) {
+      // Band-aid on wing
+      ctx.save(); ctx.rotate(-0.2);
+      ctx.fillStyle='#f4c2a0'; ctx.beginPath(); roundRect(ctx,-22*sc,-5*sc,14*sc,6*sc,2*sc); ctx.fill();
+      ctx.restore();
+    }
+    ctx.fillStyle='#8898b0';
+    ctx.beginPath(); ctx.ellipse(14*sc,-2*sc,12*sc,6*sc,0.2,0,Math.PI*2); ctx.fill();
+  }
+
+  // Head
+  ctx.fillStyle = sad ? '#8898b0' : '#6ab0f0';
+  ctx.beginPath(); ctx.arc(10*sc,-8*sc,8*sc,0,Math.PI*2); ctx.fill();
+
+  // Beak
+  ctx.fillStyle='#f4a030';
+  ctx.beginPath(); ctx.moveTo(16*sc,-8*sc); ctx.lineTo(21*sc,-7*sc); ctx.lineTo(16*sc,-5*sc); ctx.fill();
+
+  // Eyes
+  ctx.fillStyle='#1a1a2e';
+  ctx.beginPath(); ctx.arc(12*sc,-10*sc,2*sc,0,Math.PI*2); ctx.fill();
+  if (sad) {
+    // Tear
+    ctx.fillStyle='rgba(100,160,255,0.8)';
+    ctx.beginPath(); ctx.ellipse(11*sc,-7*sc,1.5*sc,3*sc,0,0,Math.PI*2); ctx.fill();
+  } else {
+    ctx.fillStyle='white'; ctx.beginPath(); ctx.arc(13*sc,-11*sc,1*sc,0,Math.PI*2); ctx.fill();
+  }
+
+  // Feet
+  ctx.strokeStyle='#f4a030'; ctx.lineWidth=1.5*sc;
+  for(let f=-1;f<=1;f+=2){ctx.beginPath();ctx.moveTo(f*4*sc,9*sc);ctx.lineTo(f*4*sc,14*sc);ctx.lineTo((f*4-3*f)*sc,14*sc);ctx.stroke();}
+
+  ctx.restore();
+}
+
+function drawBunny(ctx, x, y, sc, animal, time) {
+  const bob = Math.sin(time*2.5+animal.phase)*2*sc;
+  const sad = !animal.saved;
+  ctx.save(); ctx.translate(x, y+bob);
+
+  // Ears
+  ctx.fillStyle = sad ? '#c0a0b0' : '#f0c0d0';
+  for (let e=-1;e<=1;e+=2) {
+    ctx.save(); ctx.rotate(e*0.2);
+    ctx.beginPath(); ctx.ellipse(e*7*sc,-22*sc,5*sc,13*sc,0,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#f0a0b0'; ctx.beginPath(); ctx.ellipse(e*7*sc,-22*sc,3*sc,9*sc,0,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
+  // Body
+  ctx.fillStyle=sad?'#c0a0b0':'#f0c0d0';
+  ctx.beginPath(); ctx.ellipse(0,4*sc,13*sc,12*sc,0,0,Math.PI*2); ctx.fill();
+  // Head
+  ctx.beginPath(); ctx.arc(0,-8*sc,11*sc,0,Math.PI*2); ctx.fill();
+  // Cheeks
+  ctx.fillStyle='rgba(255,150,150,0.3)';
+  for(let c=-1;c<=1;c+=2){ctx.beginPath();ctx.arc(c*7*sc,-6*sc,4*sc,0,Math.PI*2);ctx.fill();}
+  // Eyes
+  ctx.fillStyle='#1a1a2e';
+  for(let e=-1;e<=1;e+=2){ctx.beginPath();ctx.arc(e*4*sc,-10*sc,2.5*sc,0,Math.PI*2);ctx.fill();}
+  if(sad){ctx.fillStyle='rgba(100,160,255,0.8)';ctx.beginPath();ctx.ellipse(-4*sc,-5*sc,1.5*sc,3*sc,0,0,Math.PI*2);ctx.fill();}
+  // Nose
+  ctx.fillStyle='#f4a0a0';ctx.beginPath();ctx.arc(0,-6*sc,2*sc,0,Math.PI*2);ctx.fill();
+  // Tail
+  ctx.fillStyle='white';ctx.beginPath();ctx.arc(-12*sc,4*sc,4*sc,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+}
+
+function drawTurtle(ctx, x, y, sc, animal, time) {
+  const bob = Math.sin(time*1.5+animal.phase)*2*sc;
+  const sad = !animal.saved;
+  ctx.save(); ctx.translate(x, y+bob);
+
+  // Shell
+  const shellCol = sad ? '#7a9050' : '#5a8040';
+  ctx.fillStyle=shellCol;
+  ctx.beginPath(); ctx.ellipse(0,-4*sc,16*sc,13*sc,0,0,Math.PI*2); ctx.fill();
+
+  // Shell cracks (if not saved)
+  if (!animal.saved) {
+    ctx.strokeStyle='rgba(0,0,0,0.4)'; ctx.lineWidth=1.5*sc;
+    const cracks=[[0,-12,8,-4],[0,-12,-8,-2],[0,-4,0,8],[-8,-2,-4,8],[8,-4,4,8]];
+    for(const [x1,y1,x2,y2] of cracks){
+      ctx.beginPath();ctx.moveTo(x1*sc,y1*sc);ctx.lineTo(x2*sc,y2*sc);ctx.stroke();
+    }
+  }
+
+  // Shell pattern
+  ctx.strokeStyle='rgba(0,0,0,0.2)'; ctx.lineWidth=sc;
+  for(let i=0;i<4;i++){ctx.beginPath();ctx.arc(0,-4*sc,(5+i*3)*sc,0,Math.PI*2);ctx.stroke();}
+
+  // Head
+  ctx.fillStyle=sad?'#8aaa60':'#6a9a50';
+  ctx.beginPath();ctx.ellipse(14*sc,0,8*sc,6*sc,0,0,Math.PI*2);ctx.fill();
+  // Eyes
+  ctx.fillStyle='#1a1a2e';ctx.beginPath();ctx.arc(19*sc,-2*sc,2*sc,0,Math.PI*2);ctx.fill();
+  if(sad){ctx.fillStyle='rgba(100,160,255,0.8)';ctx.beginPath();ctx.ellipse(18*sc,2*sc,1.5*sc,3*sc,0,0,Math.PI*2);ctx.fill();}
+  // Legs
+  ctx.fillStyle=sad?'#8aaa60':'#6a9a50';
+  const legs=[[-10,10,-0.5],[-10,-12,-0.8],[10,10,0.5],[10,-12,0.8]];
+  for(const[lx,ly,rot] of legs){ctx.save();ctx.translate(lx*sc,ly*sc);ctx.rotate(rot);ctx.beginPath();ctx.ellipse(0,0,5*sc,3*sc,0,0,Math.PI*2);ctx.fill();ctx.restore();}
+
+  ctx.restore();
+}
+
+function drawFox(ctx, x, y, sc, animal, time) {
+  const bob = Math.sin(time*1.8+animal.phase)*2*sc;
+  const sad = !animal.saved;
+  ctx.save(); ctx.translate(x, y+bob);
+
+  // Vines if not saved
+  if (!animal.saved) {
+    ctx.strokeStyle='#3a6030'; ctx.lineWidth=3*sc;
+    for(let v=0;v<5;v++){
+      const angle = v*1.26;
+      ctx.beginPath();
+      ctx.moveTo(0,0);
+      ctx.quadraticCurveTo(Math.cos(angle+0.5)*20*sc,Math.sin(angle+0.5)*20*sc,Math.cos(angle)*35*sc,Math.sin(angle)*35*sc);
+      ctx.stroke();
+      // Thorns
+      for(let t=0;t<3;t++){
+        const tx=Math.cos(angle+t*0.4)*15*sc*(t+1)/3;
+        const ty=Math.sin(angle+t*0.4)*15*sc*(t+1)/3;
+        ctx.save();ctx.strokeStyle='#2a4020';ctx.lineWidth=1.5*sc;
+        ctx.beginPath();ctx.moveTo(tx,ty);ctx.lineTo(tx+4*sc,ty-4*sc);ctx.stroke();ctx.restore();
+      }
+    }
+    // Snip point glows
+    for(let i=animal.currentSnip;i<animal.snipPoints.length;i++){
+      const sp=animal.snipPoints[i];
+      const glow = i===animal.currentSnip?1:0.3;
+      ctx.save();ctx.globalAlpha=0.7*glow+Math.sin(time*4)*0.3*glow;
+      ctx.fillStyle=i===animal.currentSnip?'#ffff60':'#80ff80';
+      ctx.beginPath();ctx.arc(sp.dx*sc,sp.dy*sc,5*sc,0,Math.PI*2);ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // Tail
+  ctx.fillStyle=sad?'#c07030':'#e08040';
+  ctx.beginPath();ctx.ellipse(-18*sc,8*sc,14*sc,6*sc,0.5,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='white';ctx.beginPath();ctx.arc(-26*sc,5*sc,5*sc,0,Math.PI*2);ctx.fill();
+
+  // Body
+  ctx.fillStyle=sad?'#c07030':'#e08040';
+  ctx.beginPath();ctx.ellipse(0,4*sc,14*sc,10*sc,0,0,Math.PI*2);ctx.fill();
+
+  // Head
+  ctx.beginPath();ctx.arc(12*sc,-6*sc,12*sc,0,Math.PI*2);ctx.fill();
+  // White muzzle
+  ctx.fillStyle='#f0e8d0';ctx.beginPath();ctx.ellipse(17*sc,-4*sc,6*sc,5*sc,0.2,0,Math.PI*2);ctx.fill();
+  // Ears
+  ctx.fillStyle=sad?'#c07030':'#e08040';
+  for(let e=-1;e<=1;e+=2){ctx.beginPath();ctx.moveTo((8+e*6)*sc,-16*sc);ctx.lineTo((6+e*10)*sc,-28*sc);ctx.lineTo((12+e*4)*sc,-16*sc);ctx.fill();}
+  ctx.fillStyle='#f08070';
+  for(let e=-1;e<=1;e+=2){ctx.beginPath();ctx.moveTo((8+e*6)*sc,-16*sc);ctx.lineTo((7+e*8)*sc,-24*sc);ctx.lineTo((11+e*5)*sc,-16*sc);ctx.fill();}
+  // Eyes
+  ctx.fillStyle='#1a1a2e';ctx.beginPath();ctx.arc(10*sc,-9*sc,2.5*sc,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='white';ctx.beginPath();ctx.arc(11*sc,-10*sc,1*sc,0,Math.PI*2);ctx.fill();
+  if(sad){ctx.fillStyle='rgba(100,160,255,0.8)';ctx.beginPath();ctx.ellipse(9*sc,-5*sc,1.5*sc,3*sc,0,0,Math.PI*2);ctx.fill();}
+  // Nose
+  ctx.fillStyle='#3a1a0a';ctx.beginPath();ctx.arc(19*sc,-5*sc,2*sc,0,Math.PI*2);ctx.fill();
+
+  ctx.restore();
+}
+
+function drawAnimal(animal, time) {
+  if (!inView(animal.x, animal.y, 80)) return;
+  const s = worldToScreen(animal.x, animal.y);
+  const sc = SC();
+
+  switch(animal.type) {
+    case 'bird': drawBird(ctx, s.x, s.y, sc, animal, time); break;
+    case 'bunny': drawBunny(ctx, s.x, s.y, sc, animal, time); break;
+    case 'turtle': drawTurtle(ctx, s.x, s.y, sc, animal, time); break;
+    case 'fox': drawFox(ctx, s.x, s.y, sc, animal, time); break;
+  }
+
+  // Crying particles
+  if (!animal.saved && !game.currentMinigame) {
+    if (Math.random() < 0.05) {
+      game.particles.push({
+        x: animal.x + (Math.random()-0.5)*20,
+        y: animal.y - 30,
+        vx: (Math.random()-0.5)*0.3,
+        vy: -0.8 - Math.random()*0.5,
+        life: 1, maxLife: 1,
+        type: 'tear', color: 'rgba(150,200,255,'
+      });
+    }
+    // Interaction prompt
+    const dist = Math.hypot(player.x-animal.x, player.y-animal.y);
+    if (dist < 80) {
+      ctx.save();
+      ctx.globalAlpha = 0.9;
+      drawBubble(ctx, s.x, s.y-50*sc, '💬 Press E', sc, '#fff', '#a0c0ff');
+      ctx.restore();
+    }
+  }
+
+  // Emotion bubble (visible from far)
+  if (!animal.saved) {
+    const dist = Math.hypot(player.x-animal.x, player.y-animal.y);
+    if (dist > 80 && dist < 400) {
+      const alpha = Math.min(1,(dist-80)/100) * (0.5+Math.sin(time*3)*0.3);
+      ctx.save(); ctx.globalAlpha=alpha;
+      ctx.font=`${16*sc}px Georgia`;ctx.textAlign='center';
+      ctx.fillText('😢', s.x, s.y-40*sc);
+      ctx.restore();
+    }
+  }
+}
+
+function drawBubble(ctx, x, y, text, sc, bg='#fff', border='#c0d8ff') {
+  const pad = 10*sc, fs = 13*sc;
+  ctx.font = `${fs}px Georgia`;
+  const tw = ctx.measureText(text).width;
+  const bw = tw + pad*2, bh = fs + pad*1.5;
+  ctx.fillStyle=border; ctx.beginPath();
+  roundRect(ctx,x-bw/2-2,y-bh-12*sc-2,bw+4,bh+4,10*sc); ctx.fill();
+  ctx.fillStyle=bg; ctx.beginPath();
+  roundRect(ctx,x-bw/2,y-bh-12*sc,bw,bh,10*sc); ctx.fill();
+  // Tail
+  ctx.fillStyle=bg;
+  ctx.beginPath();ctx.moveTo(x-5*sc,y-12*sc);ctx.lineTo(x+5*sc,y-12*sc);ctx.lineTo(x,y-2*sc);ctx.fill();
+  ctx.fillStyle='#334';ctx.font=`${fs}px Georgia`;ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText(text, x, y-bh/2-12*sc);
+  ctx.textBaseline='alphabetic';
+}
+
+// ============================================================
+// DRAWING: PLAYER
+// ============================================================
+function drawPlayer(time) {
+  const s = worldToScreen(player.x, player.y);
+  const sc = SC();
+  const bob = player.moving ? Math.sin(player.stepPhase)*3*sc : 0;
+  const facing = player.facing;
+
+  ctx.save(); ctx.translate(s.x, s.y+bob);
+  if (facing < 0) ctx.scale(-1,1);
+
+  // Shadow
+  ctx.globalAlpha=0.2;ctx.fillStyle='#000';
+  ctx.beginPath();ctx.ellipse(0,18*sc,12*sc,4*sc,0,0,Math.PI*2);ctx.fill();
+  ctx.globalAlpha=1;
+
+  // Backpack
+  ctx.fillStyle='#8a6040';
+  ctx.beginPath();roundRect(ctx,-14*sc,-12*sc,10*sc,16*sc,3*sc);ctx.fill();
+  ctx.fillStyle='#704020';
+  ctx.beginPath();roundRect(ctx,-13*sc,-10*sc,8*sc,6*sc,2*sc);ctx.fill();
+
+  // Body
+  ctx.fillStyle='#f4d0a0'; // skin
+  ctx.beginPath();ctx.ellipse(0,4*sc,10*sc,12*sc,0,0,Math.PI*2);ctx.fill();
+  // Shirt
+  ctx.fillStyle='#7ab8e8';
+  ctx.beginPath();ctx.ellipse(0,6*sc,10*sc,9*sc,0,0,Math.PI*2);ctx.fill();
+  // Pants
+  ctx.fillStyle='#5a7a9a';
+  ctx.beginPath();ctx.ellipse(0,14*sc,10*sc,7*sc,0,0,Math.PI*2);ctx.fill();
+
+  // Head
+  ctx.fillStyle='#f4d0a0';
+  ctx.beginPath();ctx.arc(0,-12*sc,11*sc,0,Math.PI*2);ctx.fill();
+  // Hair
+  ctx.fillStyle='#3a2010';
+  ctx.beginPath();ctx.arc(0,-16*sc,11*sc,Math.PI,0);ctx.fill();
+  ctx.beginPath();ctx.ellipse(3*sc,-14*sc,5*sc,4*sc,0.3,0,Math.PI*2);ctx.fill();
+  // Eyes
+  ctx.fillStyle='#1a1a2e';
+  ctx.beginPath();ctx.arc(4*sc,-13*sc,2*sc,0,Math.PI*2);ctx.fill();
+  // Cheek blush
+  ctx.fillStyle='rgba(255,150,150,0.3)';
+  ctx.beginPath();ctx.arc(7*sc,-10*sc,4*sc,0,Math.PI*2);ctx.fill();
+
+  // Arms
+  ctx.fillStyle='#7ab8e8';
+  const armSwing = player.moving ? Math.sin(player.stepPhase)*0.4 : 0;
+  ctx.save();ctx.translate(-10*sc,0);ctx.rotate(-armSwing);
+  ctx.beginPath();ctx.ellipse(0,4*sc,4*sc,9*sc,0,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+  ctx.save();ctx.translate(10*sc,0);ctx.rotate(armSwing);
+  ctx.beginPath();ctx.ellipse(0,4*sc,4*sc,9*sc,0,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+
+  // Legs
+  ctx.fillStyle='#5a7a9a';
+  const legSwing = player.moving ? Math.sin(player.stepPhase) : 0;
+  for(let l=-1;l<=1;l+=2){
+    ctx.save();ctx.translate(l*5*sc,14*sc);ctx.rotate(l*legSwing*0.3);
+    ctx.beginPath();ctx.ellipse(0,5*sc,4*sc,8*sc,0,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#3a2010';ctx.beginPath();ctx.ellipse(0,12*sc,5*sc,3*sc,0,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  }
+
+  // Inventory display
+  if (bandAid.collected && !animals[0].saved) {
+    ctx.save(); ctx.rotate(0.2);
+    ctx.fillStyle='#f4c2a0';
+    ctx.beginPath();roundRect(ctx,10*sc,-25*sc,16*sc,8*sc,3*sc);ctx.fill();
+    ctx.restore();
+  }
+
+  ctx.restore();
+
+  // "!" bubble when near animal
+  for (const a of animals) {
+    if (!a.saved) {
+      const dist = Math.hypot(player.x-a.x, player.y-a.y);
+      if (dist < 80) {
+        ctx.save();ctx.globalAlpha=0.9+Math.sin(time*4)*0.1;
+        ctx.font=`bold ${16*sc}px Georgia`;ctx.textAlign='center';
+        ctx.fillStyle='#ff6040';
+        ctx.fillText('!', s.x+10*sc, s.y-38*sc);
+        ctx.restore();
+        break;
+      }
+    }
+  }
+}
+
+// ============================================================
+// DRAWING: COMPANIONS (saved animals following player)
+// ============================================================
+function drawCompanions(time) {
+  const sc = SC();
+  for (let i=0; i<player.companions.length; i++) {
+    const a = player.companions[i];
+    const offset = (i+1)*30;
+    const targetX = player.x - Math.cos(Math.atan2(player.vy||0,player.vx||1))*offset;
+    const targetY = player.y - Math.sin(Math.atan2(player.vy||0,player.vx||1))*offset + i*8;
+    a.compX = a.compX || targetX;
+    a.compY = a.compY || targetY;
+    a.compX += (targetX - a.compX) * 0.08;
+    a.compY += (targetY - a.compY) * 0.08;
+
+    const s = worldToScreen(a.compX, a.compY);
+    ctx.save();ctx.scale(0.7,0.7);
+    const ox = s.x/0.7, oy = s.y/0.7;
+    switch(a.type){
+      case 'bird': drawBird(ctx,ox,oy,sc,a,time);break;
+      case 'bunny': drawBunny(ctx,ox,oy,sc,a,time);break;
+      case 'turtle': drawTurtle(ctx,ox,oy,sc,a,time);break;
+      case 'fox': drawFox(ctx,ox,oy,sc,a,time);break;
+    }
+    ctx.restore();
+  }
+}
+
+// ============================================================
+// DRAWING: PARTICLES
+// ============================================================
+function updateParticles(dt) {
+  game.particles = game.particles.filter(p => {
+    p.x += p.vx;
+    p.y += p.vy;
+    p.life -= dt * 0.8;
+    if (p.life <= 0) return false;
+    const s = worldToScreen(p.x, p.y);
+    const sc = SC();
+    const alpha = p.life / p.maxLife;
+    ctx.save(); ctx.globalAlpha = alpha;
+    if (p.type === 'tear') {
+      ctx.fillStyle = `rgba(150,200,255,${alpha})`;
+      ctx.beginPath(); ctx.ellipse(s.x, s.y, 2*sc, 3*sc, 0, 0, Math.PI*2); ctx.fill();
+    } else if (p.type === 'sparkle') {
+      ctx.fillStyle = `rgba(255,240,100,${alpha})`;
+      ctx.beginPath(); ctx.arc(s.x, s.y, 3*sc, 0, Math.PI*2); ctx.fill();
+    } else if (p.type === 'dust') {
+      ctx.fillStyle = `rgba(200,180,140,${alpha*0.5})`;
+      ctx.beginPath(); ctx.arc(s.x, s.y, 4*sc, 0, Math.PI*2); ctx.fill();
+    } else if (p.type === 'snap') {
+      ctx.strokeStyle = `rgba(100,220,100,${alpha})`;
+      ctx.lineWidth = 2*sc;
+      ctx.beginPath(); ctx.moveTo(s.x-5*sc,s.y); ctx.lineTo(s.x+5*sc,s.y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(s.x,s.y-5*sc); ctx.lineTo(s.x,s.y+5*sc); ctx.stroke();
+    } else if (p.type === 'heart') {
+      ctx.font=`${16*sc}px Georgia`; ctx.textAlign='center';
+      ctx.fillText('💖', s.x, s.y);
+    }
+    ctx.restore();
+    return true;
+  });
+}
+
+function spawnSaveParticles(wx, wy) {
+  for (let i=0; i<20; i++) {
+    const angle = Math.random()*Math.PI*2;
+    game.particles.push({
+      x: wx, y: wy,
+      vx: Math.cos(angle)*2, vy: Math.sin(angle)*2 - 1,
+      life: 1, maxLife: 1, type: i<10?'sparkle':'heart'
+    });
+  }
+}
+
+// ============================================================
+// DRAWING: HUD
+// ============================================================
+function drawHUD() {
+  const sc = SC();
+  const pad = 12*sc;
+
+  // Journal (top right) — animal save progress
+  ctx.save();
+  ctx.fillStyle='rgba(255,245,235,0.85)'; ctx.strokeStyle='rgba(180,140,100,0.7)'; ctx.lineWidth=1.5*sc;
+  roundRect(ctx,W()-120*sc,pad,110*sc,36*sc,8*sc);ctx.fill();ctx.stroke();
+  ctx.font=`${11*sc}px Georgia`; ctx.fillStyle='#5a3a1a'; ctx.textAlign='center';
+  ctx.fillText('rescued', W()-65*sc, pad+12*sc);
+  for(let i=0;i<4;i++){
+    const hx = W()-104*sc+i*26*sc, hy = pad+20*sc;
+    ctx.font=`${16*sc}px Georgia`;
+    ctx.fillText(animals[i].saved?'💖':'🩶', hx, hy+sc);
+  }
+  ctx.restore();
+
+  // Band-aid in inventory
+  if (bandAid.collected && !animals[0].saved) {
+    ctx.save();
+    ctx.fillStyle='rgba(255,245,235,0.85)'; ctx.strokeStyle='rgba(180,140,100,0.7)'; ctx.lineWidth=1.5*sc;
+    roundRect(ctx,pad,pad,90*sc,32*sc,8*sc);ctx.fill();ctx.stroke();
+    ctx.font=`${12*sc}px Georgia`;ctx.fillStyle='#5a3a1a';ctx.textAlign='left';
+    ctx.fillText('🩹 band-aid', pad+8*sc, pad+20*sc);
+    ctx.restore();
+  }
+
+  // Mochi escort speed indicator
+  if (game.currentMinigame === 'mochi_escort') {
+    const speed = Math.hypot(player.vx, player.vy);
+    const maxSafe = 60;
+    const barW = 140*sc, barH = 14*sc;
+    const bx = W()/2-barW/2, by = H()-50*sc;
+    ctx.save();
+    ctx.fillStyle='rgba(0,0,0,0.4)';roundRect(ctx,bx-2,by-2,barW+4,barH+4,5*sc);ctx.fill();
+    ctx.fillStyle='rgba(255,255,255,0.3)';roundRect(ctx,bx,by,barW,barH,5*sc);ctx.fill();
+    const prog = Math.min(speed/maxSafe,1);
+    const col = prog<0.6?'#60e060':prog<0.85?'#e0e060':'#e06060';
+    ctx.fillStyle=col;roundRect(ctx,bx,by,barW*prog,barH,5*sc);ctx.fill();
+    ctx.fillStyle='white';ctx.font=`bold ${11*sc}px Georgia`;ctx.textAlign='center';
+    ctx.fillText(prog<0.6?'🐾 nice & slow':'too fast! slow down 🐰', W()/2, by-8*sc);
+    ctx.restore();
+  }
+
+  // Controls hint (bottom left)
+  ctx.save();
+  ctx.fillStyle='rgba(255,255,255,0.4)';ctx.font=`${10*sc}px Georgia`;ctx.textAlign='left';
+  ctx.fillText('WASD/↑↓←→ move  •  Q + direction = run  •  E / click animal to interact', pad, H()-12*sc);
+  ctx.restore();
+
+  // Minimap (bottom right)
+  const mw=110*sc, mh=82*sc, mx=W()-mw-pad, my=H()-mh-pad;
+  ctx.save();
+  ctx.fillStyle='rgba(0,0,0,0.45)'; ctx.strokeStyle='rgba(255,255,255,0.25)'; ctx.lineWidth=sc;
+  roundRect(ctx,mx,my,mw,mh,6*sc); ctx.fill(); ctx.stroke();
+  // Draw land outline on minimap
+  ctx.globalAlpha=0.7;
+  const gStepX = (WORLD.w/GRID), gStepY = (WORLD.h/GRID);
+  for (let gy=0; gy<gStepY; gy++) {
+    for (let gx=0; gx<gStepX; gx++) {
+      if (landMap[gy] && landMap[gy][gx]) {
+        ctx.fillStyle='#5a9a4a';
+        ctx.fillRect(mx + (gx/gStepX)*mw, my + (gy/gStepY)*mh, mw/gStepX+0.5, mh/gStepY+0.5);
+      }
+    }
+  }
+  ctx.globalAlpha=1;
+  // Animal dots
+  const animalEmojis=['🐦','🐰','🐢','🦊'];
+  for(let i=0;i<animals.length;i++){
+    const a=animals[i];
+    if(a.saved) continue;
+    const ax=mx+(a.x/WORLD.w)*mw, ay=my+(a.y/WORLD.h)*mh;
+    // Pulsing dot
+    const pulse=0.7+Math.sin(Date.now()*0.004+i)*0.3;
+    ctx.globalAlpha=pulse;
+    ctx.fillStyle='#ffdd44';
+    ctx.beginPath(); ctx.arc(ax,ay,4*sc,0,Math.PI*2); ctx.fill();
+    ctx.globalAlpha=1;
+  }
+  // Player dot
+  const px=mx+(player.x/WORLD.w)*mw, py=my+(player.y/WORLD.h)*mh;
+  ctx.fillStyle='#ffffff';
+  ctx.beginPath(); ctx.arc(px,py,3*sc,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+// ============================================================
+// MINIGAME: BIRD WING (Band-Aid Drag)
+// ============================================================
+let bandAidDrag = { active:false, x:0, y:0, startX:0, startY:0 };
+
+function drawBirdMinigame(time) {
+  const a = animals[0];
+  const sc = SC();
+  const cx = W()/2, cy = H()/2;
+
+  // Overlay
+  ctx.fillStyle='rgba(10,5,30,0.82)';ctx.fillRect(0,0,W(),H());
+
+  // Panel
+  const pw=360*sc, ph=300*sc;
+  ctx.fillStyle='#f5f0e8';ctx.strokeStyle='#d4b8a0';ctx.lineWidth=2*sc;
+  roundRect(ctx,cx-pw/2,cy-ph/2,pw,ph,18*sc);ctx.fill();ctx.stroke();
+
+  // Title
+  ctx.fillStyle='#5a3a1a';ctx.font=`bold ${16*sc}px Georgia`;ctx.textAlign='center';
+  ctx.fillText('🐦 Heal Pip\'s Wing', cx, cy-ph/2+28*sc);
+
+  // Draw large bird
+  ctx.save();ctx.translate(cx-40*sc,cy);ctx.scale(2.5,2.5);
+  drawBird(ctx,0,0,sc,a,time);ctx.restore();
+
+  if (!bandAid.collected) {
+    ctx.fillStyle='#5a3a1a';ctx.font=`${13*sc}px Georgia`;ctx.textAlign='center';
+    ctx.fillText('Find the 🩹 band-aid on the island first!', cx, cy+ph/2-30*sc);
+    // Close
+    ctx.fillStyle='#a06040';roundRect(ctx,cx-40*sc,cy+ph/2-20*sc,80*sc,16*sc,6*sc);ctx.fill();
+    ctx.fillStyle='white';ctx.font=`${11*sc}px Georgia`;ctx.fillText('close (E)', cx, cy+ph/2-10*sc);
+  } else {
+    // Progress bar
+    const prog = a.applyProgress;
+    ctx.fillStyle='#5a3a1a';ctx.font=`${12*sc}px Georgia`;ctx.textAlign='center';
+    ctx.fillText('Drag the 🩹 across the wing to heal!', cx, cy+ph/2-55*sc);
+    const bw=200*sc, bh=14*sc, bx=cx-bw/2, by=cy+ph/2-38*sc;
+    ctx.fillStyle='rgba(0,0,0,0.15)';roundRect(ctx,bx,by,bw,bh,5*sc);ctx.fill();
+    ctx.fillStyle='#f4a0a0';roundRect(ctx,bx,by,bw*prog,bh,5*sc);ctx.fill();
+    ctx.fillStyle='white';ctx.font=`bold ${10*sc}px Georgia`;
+    ctx.fillText(`${Math.round(prog*100)}%`, cx, by+bh-2*sc);
+
+    // Draggable band-aid
+    const baidX = bandAidDrag.active ? bandAidDrag.x : cx+80*sc;
+    const baidY = bandAidDrag.active ? bandAidDrag.y : cy+30*sc;
+    ctx.save();ctx.translate(baidX,baidY);ctx.rotate(0.3);
+    ctx.fillStyle='#f4c2a0';ctx.strokeStyle='#d49070';ctx.lineWidth=sc;
+    roundRect(ctx,-20*sc,-8*sc,40*sc,16*sc,5*sc);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#e8a888';roundRect(ctx,-8*sc,-8*sc,16*sc,16*sc,2*sc);ctx.fill();
+    ctx.fillStyle='rgba(255,255,255,0.8)';
+    for(let d=0;d<3;d++){ctx.beginPath();ctx.arc(-3*sc+d*3*sc,0,1.5*sc,0,Math.PI*2);ctx.fill();}
+    ctx.restore();
+
+    if (prog >= 1 && !a.wingBroken) {
+      ctx.fillStyle='#5a9a50';ctx.font=`bold ${14*sc}px Georgia`;ctx.textAlign='center';
+      ctx.fillText('✨ Wing healed! Press E to continue', cx, cy+ph/2-15*sc);
+    }
+  }
+}
+
+// ============================================================
+// MINIGAME: BUNNY ESCORT
+// ============================================================
+function drawMochiMinigame(time) {
+  const a = animals[1];
+  const sc = SC();
+
+  // Gloom vignette
+  ctx.save();
+  const vgGrad = ctx.createRadialGradient(W()/2,H()/2,W()*0.15,W()/2,H()/2,W()*0.7);
+  vgGrad.addColorStop(0,'rgba(0,0,0,0)');vgGrad.addColorStop(1,'rgba(10,5,30,0.75)');
+  ctx.fillStyle=vgGrad;ctx.fillRect(0,0,W(),H());
+  ctx.restore();
+
+  // Mochi follows and draws near player
+  const s = worldToScreen(a.x, a.y);
+  ctx.save();ctx.scale(1.3,1.3);
+  drawBunny(ctx,s.x/1.3,s.y/1.3,sc,a,time);
+  ctx.restore();
+
+  // Instructions
+  if (a.tooFast) {
+    ctx.save();
+    ctx.fillStyle='rgba(255,100,100,0.85)';ctx.strokeStyle='rgba(200,50,50,0.9)';ctx.lineWidth=1.5*sc;
+    roundRect(ctx,W()/2-120*sc,H()*0.15,240*sc,40*sc,10*sc);ctx.fill();ctx.stroke();
+    ctx.fillStyle='white';ctx.font=`bold ${13*sc}px Georgia`;ctx.textAlign='center';
+    ctx.fillText('🐰 Mochi is scared! Slow down!', W()/2, H()*0.15+26*sc);
+    ctx.restore();
+  }
+}
+
+// ============================================================
+// MINIGAME: TURTLE SHELL PUZZLE
+// ============================================================
+let dragPiece = null, dragOffX=0, dragOffY=0;
+function drawTurtleMinigame(time) {
+  const a = animals[2];
+  const sc = SC();
+  const cx = W()/2, cy = H()/2;
+
+  ctx.fillStyle='rgba(10,5,30,0.82)';ctx.fillRect(0,0,W(),H());
+
+  const pw=380*sc, ph=340*sc;
+  ctx.fillStyle='#f5f0e8';ctx.strokeStyle='#d4b8a0';ctx.lineWidth=2*sc;
+  roundRect(ctx,cx-pw/2,cy-ph/2,pw,ph,18*sc);ctx.fill();ctx.stroke();
+
+  ctx.fillStyle='#5a3a1a';ctx.font=`bold ${16*sc}px Georgia`;ctx.textAlign='center';
+  ctx.fillText('🐢 Fix Koko\'s Shell!', cx, cy-ph/2+28*sc);
+
+  // Turtle outline
+  ctx.save();ctx.translate(cx,cy-20*sc);ctx.scale(2.8,2.8);
+  drawTurtle(ctx,0,0,sc,{saved:false, phase:0},time);
+  ctx.restore();
+
+  // Draw target zones first (so pieces draw on top)
+  for (const p of a.shellPieces) {
+    if (p.placed) continue;
+    const tx = cx + p.correctX*sc*2.8, ty = cy-20*sc + p.correctY*sc*2.8;
+    ctx.save();
+    ctx.globalAlpha = 0.35 + Math.sin(time*3 + p.id)*0.15;
+    ctx.strokeStyle = '#a0d080'; ctx.lineWidth = 2.5*sc; ctx.setLineDash([4*sc,3*sc]);
+    ctx.beginPath(); ctx.arc(tx, ty, 18*sc, 0, Math.PI*2); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+  // Shell pieces
+  for (const p of a.shellPieces) {
+    const px = p.placed ? cx+p.correctX*sc*2.8 : cx+p.curX*sc;
+    const py = p.placed ? cy-20*sc+p.correctY*sc*2.8 : cy-20*sc+p.curY*sc;
+    if (dragPiece === p) continue;
+    ctx.fillStyle = p.placed ? 'rgba(100,180,80,0.85)' : '#7a9050';
+    ctx.strokeStyle = p.placed ? '#4a8030' : '#5a7040';
+    ctx.lineWidth = 2*sc;
+    ctx.beginPath();ctx.arc(px,py,16*sc,0,Math.PI*2);ctx.fill();ctx.stroke();
+    if (!p.placed) {
+      ctx.fillStyle='rgba(255,255,255,0.5)';ctx.beginPath();ctx.arc(px-3*sc,py-3*sc,5*sc,0,Math.PI*2);ctx.fill();
+    } else {
+      ctx.fillStyle='white';ctx.font=`${14*sc}px Georgia`;ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText('✓',px,py);ctx.textBaseline='alphabetic';
+    }
+  }
+  if (dragPiece) {
+    const p = dragPiece;
+    ctx.fillStyle='rgba(120,200,100,0.85)';ctx.strokeStyle='#4a8030';ctx.lineWidth=2.5*sc;
+    ctx.beginPath();ctx.arc(game.mouse.x+dragOffX,game.mouse.y+dragOffY,14*sc,0,Math.PI*2);ctx.fill();ctx.stroke();
+  }
+
+  const allPlaced = a.shellPieces.every(p=>p.placed);
+  if (allPlaced) {
+    ctx.fillStyle='#5a9a50';ctx.font=`bold ${14*sc}px Georgia`;ctx.textAlign='center';
+    ctx.fillText('✨ Shell restored! Press E to continue', cx, cy+ph/2-20*sc);
+  } else {
+    ctx.fillStyle='#8a6040';ctx.font=`${12*sc}px Georgia`;ctx.textAlign='center';
+    ctx.fillText('Drag each piece to the correct spot on the shell', cx, cy+ph/2-20*sc);
+  }
+}
+
+// ============================================================
+// MINIGAME: FOX VINE SNIP
+// ============================================================
+function drawFoxMinigame(time) {
+  const a = animals[3];
+  const sc = SC();
+  const cx = W()/2, cy = H()/2;
+
+  ctx.fillStyle='rgba(10,5,30,0.82)';ctx.fillRect(0,0,W(),H());
+
+  const pw=340*sc, ph=300*sc;
+  ctx.fillStyle='#f5f0e8';ctx.strokeStyle='#d4b8a0';ctx.lineWidth=2*sc;
+  roundRect(ctx,cx-pw/2,cy-ph/2,pw,ph,18*sc);ctx.fill();ctx.stroke();
+
+  ctx.fillStyle='#5a3a1a';ctx.font=`bold ${16*sc}px Georgia`;ctx.textAlign='center';
+  ctx.fillText('🦊 Free Sora from the Vines!', cx, cy-ph/2+28*sc);
+
+  // Big fox
+  ctx.save();ctx.translate(cx,cy+10*sc);ctx.scale(2.5,2.5);
+  drawFox(ctx,0,0,sc,a,time);
+  ctx.restore();
+
+  // Snip points — all glow and clickable at once
+  for (let i=0; i<a.snipPoints.length; i++) {
+    const sp = a.snipPoints[i];
+    if (sp.cut) continue;
+    const spx = cx + sp.dx*sc*2.5, spy = cy+10*sc + sp.dy*sc*2.5;
+    const glow = 0.6+Math.sin(time*4+i)*0.4;
+    ctx.save();
+    ctx.globalAlpha = glow;
+    // Outer glow ring
+    ctx.strokeStyle='#ffdd00'; ctx.lineWidth=3*sc;
+    ctx.beginPath();ctx.arc(spx,spy,16*sc,0,Math.PI*2);ctx.stroke();
+    ctx.fillStyle='#ffff60';
+    ctx.strokeStyle='#ffcc00'; ctx.lineWidth=2*sc;
+    ctx.beginPath();ctx.arc(spx,spy,12*sc,0,Math.PI*2);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#333';ctx.font=`bold ${14*sc}px Georgia`;ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText('✂',spx,spy);ctx.textBaseline='alphabetic';
+    ctx.restore();
+  }
+
+  const allCut = a.currentSnip >= a.snipPoints.length;
+  if (allCut) {
+    ctx.fillStyle='#5a9a50';ctx.font=`bold ${14*sc}px Georgia`;ctx.textAlign='center';
+    ctx.fillText('✨ Sora is free! Press E to continue', cx, cy+ph/2-20*sc);
+  } else {
+    ctx.fillStyle='#8a6040';ctx.font=`${12*sc}px Georgia`;ctx.textAlign='center';
+    ctx.fillText(`Click each ✂ to snip the vines! (${a.currentSnip}/${a.snipPoints.length} cut)`, cx, cy+ph/2-20*sc);
+  }
+}
+
+// ============================================================
+// WISDOM SCREEN
+// ============================================================
+function drawWisdomScreen(time) {
+  const sc = SC();
+  const a = game.currentWisdom;
+  if (!a) return;
+
+  // Fade in only (no fade out on timer)
+  const alpha = Math.min(1, game.wisdomTimer / 0.5);
+  ctx.save(); ctx.globalAlpha = alpha;
+
+  // Soft overlay
+  ctx.fillStyle='rgba(255,240,220,0.92)'; ctx.fillRect(0,0,W(),H());
+
+  // Decorative border
+  ctx.strokeStyle='rgba(180,140,100,0.4)'; ctx.lineWidth=4*sc;
+  roundRect(ctx,30*sc,30*sc,W()-60*sc,H()-60*sc,20*sc); ctx.stroke();
+
+  // Animal drawing (large)
+  ctx.save();ctx.translate(W()/2,H()*0.38);ctx.scale(3.5,3.5);
+  a.saved=true;
+  switch(a.type){
+    case 'bird': drawBird(ctx,0,0,sc,a,time);break;
+    case 'bunny': drawBunny(ctx,0,0,sc,a,time);break;
+    case 'turtle': drawTurtle(ctx,0,0,sc,a,time);break;
+    case 'fox': drawFox(ctx,0,0,sc,a,time);break;
+  }
+  ctx.restore();
+
+  // Wisdom bubble
+  const lines = a.wisdom.split('\n');
+  const bw=380*sc, bh=(lines.length*26+40)*sc;
+  const bx=W()/2-bw/2, by=H()*0.6;
+  ctx.fillStyle='#fff8f0'; ctx.strokeStyle='#c0a080'; ctx.lineWidth=2*sc;
+  roundRect(ctx,bx,by,bw,bh,18*sc);ctx.fill();ctx.stroke();
+  // Bubble tail
+  ctx.fillStyle='#fff8f0';ctx.beginPath();ctx.moveTo(W()/2-10*sc,by);ctx.lineTo(W()/2+10*sc,by);ctx.lineTo(W()/2,by-18*sc);ctx.fill();
+
+  ctx.fillStyle='#5a3a1a';ctx.textAlign='center';
+  ctx.font=`italic ${15*sc}px Georgia`;
+  lines.forEach((line,i)=>{ctx.fillText(line,W()/2,by+32*sc+i*26*sc);});
+
+  // Pulsing "tap to continue" prompt
+  const pulse = 0.5 + Math.sin(time*2.5)*0.5;
+  ctx.globalAlpha = alpha * (0.5 + pulse*0.5);
+  ctx.fillStyle='rgba(100,80,60,0.8)';ctx.font=`bold ${13*sc}px Georgia`;
+  ctx.fillText('✦ tap or press any key to continue ✦', W()/2, by+bh-12*sc);
+
+  ctx.restore();
+}
+
+// ============================================================
+// ENDING SCREEN
+// ============================================================
+function drawEndingScreen(time) {
+  const sc = SC();
+  const alpha = Math.min(1, (game.endingTimer||0)/1.5);
+  ctx.save(); ctx.globalAlpha=alpha;
+
+  // Beautiful gradient sky
+  const skyGrad = ctx.createLinearGradient(0,0,0,H());
+  skyGrad.addColorStop(0,'#ffecd2');skyGrad.addColorStop(0.5,'#fcb69f');skyGrad.addColorStop(1,'#a8edea');
+  ctx.fillStyle=skyGrad;ctx.fillRect(0,0,W(),H());
+
+  // Ground
+  ctx.fillStyle='#8bc34a';
+  ctx.fillRect(0,H()*0.65,W(),H()*0.35);
+
+  // Flowers
+  for(let i=0;i<30;i++){
+    const fx=(Math.sin(i*37.3)*0.5+0.5)*W(), fy=H()*0.65+(Math.sin(i*29.1)*0.5+0.5)*H()*0.3;
+    ctx.fillStyle=`hsl(${i*30},80%,70%)`;ctx.beginPath();ctx.arc(fx,fy,5*sc,0,Math.PI*2);ctx.fill();
+  }
+
+  // All 4 animals together
+  const poses=[{x:-200,y:0},{x:-60,y:0},{x:60,y:0},{x:200,y:0}];
+  const drawFns=[drawBird,drawBunny,drawTurtle,drawFox];
+  poses.forEach((p,i)=>{
+    const ax=W()/2+p.x*sc, ay=H()*0.55+p.y*sc;
+    ctx.save();ctx.translate(ax,ay);ctx.scale(2.5,2.5);
+    drawFns[i](ctx,0,0,sc,{...animals[i],saved:true},time);
+    ctx.restore();
+  });
+
+  // Player in center
+  const ps=worldToScreen(player.x,player.y);
+  ctx.save();ctx.translate(W()/2,H()*0.5);ctx.scale(1.5,1.5);
+  drawPlayer.call({}, time); // can't use directly, draw inline
+  ctx.restore();
+
+  // Message bubble
+  const msg="Life can be hard —\nbut you are the final goal. 🌿";
+  const mlines=msg.split('\n');
+  const bw=340*sc, bh=90*sc, bx=W()/2-bw/2, by=H()*0.1;
+  ctx.fillStyle='rgba(255,252,245,0.95)';ctx.strokeStyle='#c0a080';ctx.lineWidth=2*sc;
+  roundRect(ctx,bx,by,bw,bh,18*sc);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#5a3a1a';ctx.textAlign='center';ctx.font=`bold italic ${16*sc}px Georgia`;
+  mlines.forEach((l,i)=>ctx.fillText(l,W()/2,by+30*sc+i*26*sc));
+
+  // Animals names
+  const names=['Pip','Mochi','Koko','Sora'];
+  poses.forEach((p,i)=>{
+    ctx.fillStyle='#5a3a1a';ctx.font=`italic ${12*sc}px Georgia`;ctx.textAlign='center';
+    ctx.fillText(names[i],W()/2+p.x*sc,H()*0.55+30*sc);
+  });
+
+  ctx.fillStyle='rgba(100,80,60,0.5)';ctx.font=`${11*sc}px Georgia`;ctx.textAlign='center';
+  ctx.fillText('thank you for playing ♡', W()/2, H()-20*sc);
+
+  ctx.restore();
+  game.endingTimer = (game.endingTimer||0) + 0.016;
+}
+
+// ============================================================
+// INPUT HANDLING
+// ============================================================
+window.addEventListener('keydown', e => {
+  game.keys[e.code] = true;
+  // Any key press closes wisdom screen
+  if (game.state === 'wisdom') { closeWisdom(); return; }
+  if (e.code === 'KeyE' || e.code === 'Space') handleInteract();
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
+});
+window.addEventListener('keyup', e => { game.keys[e.code] = false; });
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const scX = canvas.width / rect.width;
+  const scY = canvas.height / rect.height;
+  game.mouse.x = (e.clientX - rect.left) * scX;
+  game.mouse.y = (e.clientY - rect.top) * scY;
+
+  // Band-aid drag
+  if (game.currentMinigame === 'bird_wing' && game.mouse.down && bandAid.collected) {
+    bandAidDrag.active = true;
+    bandAidDrag.x = game.mouse.x;
+    bandAidDrag.y = game.mouse.y;
+    // Check if dragging over wing area
+    const a = animals[0];
+    const cx = W()/2, cy = H()/2;
+    const wingX = cx-40*SC(), wingY = cy;
+    const dist = Math.hypot(game.mouse.x - wingX, game.mouse.y - wingY);
+    if (dist < 80*SC()) {
+      a.applyProgress = Math.min(1, a.applyProgress + 0.012);
+      if (a.applyProgress > 0.3) a.wingBroken = false;
+      if (a.applyProgress > 0.5) a.bandAidApplied = true;
+      playNote(440+a.applyProgress*200, 0.1, 0.05, 'sine');
+    }
+  }
+
+  // Turtle piece drag
+  if (game.currentMinigame === 'turtle_shell' && dragPiece && game.mouse.down) {
+    // dragPiece moves with mouse
+  }
+});
+
+canvas.addEventListener('mousedown', e => {
+  game.mouse.down = true;
+  handleClick(e);
+});
+
+canvas.addEventListener('mouseup', e => {
+  game.mouse.down = false;
+  bandAidDrag.active = false;
+
+  // Drop turtle piece
+  if (game.currentMinigame === 'turtle_shell' && dragPiece) {
+    const a = animals[2];
+    const sc = SC();
+    const cx = W()/2, cy = H()/2;
+    // Check if near correct position
+    const cp = dragPiece;
+    const targetX = cx + cp.correctX*sc*2.8;
+    const targetY = cy-20*sc + cp.correctY*sc*2.8;
+    const dist = Math.hypot(game.mouse.x - targetX, game.mouse.y - targetY);
+    if (dist < 55*sc) {
+      cp.placed = true;
+      cp.curX = cp.correctX * 2.8; // snap to exact position
+      cp.curY = cp.correctY * 2.8;
+      playDing(660);
+      if (a.shellPieces.every(p=>p.placed)) {
+        setTimeout(()=>{ if(game.currentMinigame==='turtle_shell') triggerWisdom(a); },800);
+      }
+    } else {
+      // Return to original scatter position instead of random
+      cp.curX = cp.curX * 0.9 + cp.startX * 0.1;
+      cp.curY = cp.curY * 0.9 + cp.startY * 0.1;
+    }
+    dragPiece = null;
+  }
+});
+
+// Touch support
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  const t = e.touches[0];
+  const rect = canvas.getBoundingClientRect();
+  const scX = canvas.width / rect.width;
+  const scY = canvas.height / rect.height;
+  game.mouse.x = (t.clientX - rect.left) * scX;
+  game.mouse.y = (t.clientY - rect.top) * scY;
+  game.mouse.down = true;
+  handleClick(e);
+}, {passive:false});
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const t = e.touches[0];
+  const rect = canvas.getBoundingClientRect();
+  const scX = canvas.width / rect.width;
+  const scY = canvas.height / rect.height;
+  game.mouse.x = (t.clientX - rect.left) * scX;
+  game.mouse.y = (t.clientY - rect.top) * scY;
+  // Fire mousemove logic
+  canvas.dispatchEvent(new MouseEvent('mousemove',{clientX:t.clientX,clientY:t.clientY}));
+}, {passive:false});
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  game.mouse.down = false;
+  bandAidDrag.active = false;
+  if (game.currentMinigame === 'turtle_shell' && dragPiece) {
+    canvas.dispatchEvent(new MouseEvent('mouseup'));
+  }
+  if (game.state === 'wisdom') {
+    closeWisdom();
+  }
+}, {passive:false});
+
+function handleClick(e) {
+  const mx = game.mouse.x, my = game.mouse.y;
+  const sc = SC();
+
+  if (game.state === 'wisdom') { closeWisdom(); return; }
+  if (game.state === 'ending') return;
+
+  // Fox vine snip — click ANY uncut vine, bigger hit area
+  if (game.currentMinigame === 'fox_vines') {
+    const a = animals[3];
+    const cx = W()/2, cy = H()/2;
+    for (let i = 0; i < a.snipPoints.length; i++) {
+      const sp = a.snipPoints[i];
+      if (sp.cut) continue;
+      const spx = cx + sp.dx*sc*2.5, spy = cy+10*sc + sp.dy*sc*2.5;
+      if (Math.hypot(mx-spx, my-spy) < 35*sc) {
+        sp.cut = true;
+        a.currentSnip++;
+        playSnap();
+        game.particles.push({x:a.x+(Math.random()-0.5)*20,y:a.y,vx:(Math.random()-0.5)*2,vy:-1,life:0.8,maxLife:0.8,type:'snap'});
+        if (a.currentSnip >= a.snipPoints.length) {
+          setTimeout(()=>{ if(game.currentMinigame==='fox_vines') triggerWisdom(a); },800);
+        }
+        break;
+      }
+    }
+    return;
+  }
+
+  // Turtle shell - pick up piece (bigger grab area)
+  if (game.currentMinigame === 'turtle_shell') {
+    const a = animals[2];
+    const cx = W()/2, cy = H()/2;
+    if (!dragPiece) {
+      for (const p of a.shellPieces) {
+        if (p.placed) continue;
+        const px = cx+p.curX*sc, py = cy-20*sc+p.curY*sc;
+        if (Math.hypot(mx-px, my-py) < 35*sc) {
+          dragPiece = p;
+          dragOffX = px-mx;
+          dragOffY = py-my;
+          break;
+        }
+      }
+    }
+    if (dragPiece) {
+      dragPiece.curX = (mx + dragOffX - cx)/sc;
+      dragPiece.curY = (my + dragOffY - (cy-20*sc))/sc;
+    }
+    return;
+  }
+
+  // Bird minigame — clicking counts as healing progress
+  if (game.currentMinigame === 'bird_wing') {
+    const a = animals[0];
+    if (bandAid.collected) {
+      a.applyProgress = Math.min(1, a.applyProgress + 0.1);
+      if (a.applyProgress > 0.3) a.wingBroken = false;
+      if (a.applyProgress > 0.5) a.bandAidApplied = true;
+      playNote(440 + a.applyProgress*200, 0.1, 0.05, 'sine');
+      if (a.applyProgress >= 1) { setTimeout(()=>triggerWisdom(a), 400); }
+    }
+    return;
+  }
+
+  // Click on animal in world to interact directly
+  if (game.state === 'playing') {
+    for (const a of animals) {
+      if (a.saved || a.interacted) continue;
+      const s = worldToScreen(a.x, a.y);
+      if (Math.hypot(mx - s.x, my - s.y) < 55*sc) {
+        player.x = a.x + 40;
+        player.y = a.y;
+        startMinigame(a);
+        return;
+      }
+    }
+    // Click band-aid to collect
+    if (!bandAid.collected && !animals[0].saved) {
+      const s = worldToScreen(bandAid.x, bandAid.y);
+      if (Math.hypot(mx - s.x, my - s.y) < 40*sc) {
+        bandAid.collected = true;
+        playDing(880);
+        for(let i=0;i<8;i++) game.particles.push({x:bandAid.x,y:bandAid.y,vx:(Math.random()-0.5)*3,vy:-2-Math.random(),life:1,maxLife:1,type:'sparkle'});
+      }
+    }
+  }
+}
+
+// Update turtle drag
+function updateTurtleDrag() {
+  if (dragPiece && game.mouse.down) {
+    const sc = SC();
+    const cx = W()/2, cy = H()/2;
+    dragPiece.curX = (game.mouse.x + dragOffX - cx)/sc;
+    dragPiece.curY = (game.mouse.y + dragOffY - (cy-20*sc))/sc;
+  }
+}
+
+function handleInteract() {
+  if (game.state === 'wisdom') { closeWisdom(); return; }
+
+  // Check if in minigame
+  if (game.currentMinigame === 'bird_wing') {
+    const a = animals[0];
+    if (!bandAid.collected) { game.currentMinigame = null; return; }
+    if (a.applyProgress >= 1) { triggerWisdom(a); }
+    return;
+  }
+  if (game.currentMinigame === 'mochi_escort') {
+    // Check if mochi reached light
+    return;
+  }
+
+  // Check proximity to animals
+  for (const a of animals) {
+    if (!a.saved && !a.interacted) {
+      const dist = Math.hypot(player.x-a.x, player.y-a.y);
+      if (dist < 80) {
+        startMinigame(a);
+        return;
+      }
+    }
+  }
+
+  // Check band-aid pickup
+  if (!bandAid.collected && !animals[0].saved) {
+    const dist = Math.hypot(player.x-bandAid.x, player.y-bandAid.y);
+    if (dist < 50) {
+      bandAid.collected = true;
+      playDing(880);
+      game.particles.push({x:bandAid.x,y:bandAid.y,vx:0,vy:-2,life:1,maxLife:1,type:'sparkle'});
+      return;
+    }
+  }
+}
+
+function startMinigame(a) {
+  a.interacted = true;
+  if (!audioCtx) initAudio();
+  switch(a.type) {
+    case 'bird': game.currentMinigame = 'bird_wing'; break;
+    case 'bunny':
+      game.currentMinigame = 'mochi_escort';
+      a.escorting = true;
+      break;
+    case 'turtle': game.currentMinigame = 'turtle_shell'; break;
+    case 'fox': game.currentMinigame = 'fox_vines'; break;
+  }
+}
+
+function triggerWisdom(a) {
+  game.currentMinigame = null;
+  game.state = 'wisdom';
+  game.currentWisdom = a;
+  game.wisdomTimer = 0;
+  a.saved = true;
+  a.emotion = 'happy';
+  game.savedAnimals++;
+  spawnSaveParticles(a.x, a.y);
+  playWisdomChime();
+  player.companions.push(a);
+  dragPiece = null;
+
+  if (game.savedAnimals >= game.totalAnimals) {
+    setTimeout(() => { game.state = 'ending'; game.endingTimer = 0; }, 5000);
+  }
+}
+
+function closeWisdom() {
+  game.state = 'playing';
+  game.currentWisdom = null;
+  game.currentMinigame = null;
+}
+
+// ============================================================
+// UPDATE
+// ============================================================
+let lastTime = 0;
+function update(ts) {
+  const dt = Math.min((ts - lastTime)/1000, 0.05);
+  lastTime = ts;
+  const time = ts/1000;
+
+  // Time of day
+  game.timeOfDay = (game.timeOfDay + game.timeSpeed) % 1;
+
+  // Player movement
+  if (game.state === 'playing' || game.currentMinigame === 'mochi_escort') {
+    let dx=0, dy=0;
+    if (game.keys['KeyW']||game.keys['ArrowUp']) dy=-1;
+    if (game.keys['KeyS']||game.keys['ArrowDown']) dy=1;
+    if (game.keys['KeyA']||game.keys['ArrowLeft']) dx=-1;
+    if (game.keys['KeyD']||game.keys['ArrowRight']) dx=1;
+    if (dx!==0&&dy!==0){dx*=0.707;dy*=0.707;}
+
+    // Q + direction = sprint
+    const isSprinting = game.keys['KeyQ'] && (dx!==0||dy!==0);
+    player.sprinting = isSprinting;
+    const speed = isSprinting ? player.sprintSpeed : player.speed;
+    player.vx = dx*speed;
+    player.vy = dy*speed;
+
+    const nx = player.x + player.vx*dt;
+    const ny = player.y + player.vy*dt;
+
+    // Use a small collision radius so player doesn't get stuck on grid edges
+    const cr = 8;
+    function canMove(x, y) {
+      return isLandFast(x, y) || isLandFast(x+cr, y) || isLandFast(x-cr, y) ||
+             isLandFast(x, y+cr) || isLandFast(x, y-cr);
+    }
+    if (canMove(nx, player.y)) player.x = Math.max(0,Math.min(WORLD.w,nx));
+    if (canMove(player.x, ny)) player.y = Math.max(0,Math.min(WORLD.h,ny));
+
+    player.moving = dx!==0||dy!==0;
+    if (player.moving) {
+      if (dx!==0) player.facing = dx>0?1:-1;
+      player.stepPhase += dt * (isSprinting ? 18 : 6);
+      player.dustTimer -= dt;
+      if (player.dustTimer<=0) {
+        playFootstep();
+        player.dustTimer = isSprinting ? 0.1 : 0.3;
+        if (isSprinting) {
+          game.particles.push({x:player.x,y:player.y+10,vx:(Math.random()-0.5)*1.5,vy:0.5,life:0.4,maxLife:0.4,type:'dust'});
+          game.particles.push({x:player.x,y:player.y+10,vx:(Math.random()-0.5)*1.5,vy:0.5,life:0.3,maxLife:0.3,type:'dust'});
+        } else {
+          game.particles.push({x:player.x,y:player.y+10,vx:(Math.random()-0.5)*0.5,vy:0.2,life:0.5,maxLife:0.5,type:'dust'});
+        }
+      }
+    }
+
+    // Band-aid auto-collect proximity
+    if (!bandAid.collected && !animals[0].saved) {
+      const dist = Math.hypot(player.x-bandAid.x, player.y-bandAid.y);
+      if (dist < 35) {
+        bandAid.collected = true;
+        playDing(880);
+        for(let i=0;i<8;i++) game.particles.push({x:bandAid.x,y:bandAid.y,vx:(Math.random()-0.5)*3,vy:-2-Math.random(),life:1,maxLife:1,type:'sparkle'});
+      }
+    }
+
+    // Mochi escort logic
+    if (game.currentMinigame === 'mochi_escort') {
+      const a = animals[1];
+      const speed = Math.hypot(player.vx, player.vy);
+      a.tooFast = speed > 70;
+      if (!a.tooFast) {
+        // Mochi follows
+        const mdist = Math.hypot(player.x-a.x, player.y-a.y);
+        if (mdist > 40) {
+          const ang = Math.atan2(player.y-a.y, player.x-a.x);
+          a.x += Math.cos(ang)*dt*50;
+          a.y += Math.sin(ang)*dt*50;
+        }
+        a.escortProgress += dt*0.03;
+        // Check if escaped gloom zone
+        const gz = gloomZones[1];
+        const gDist = Math.hypot(a.x-gz.x, a.y-gz.y);
+        if (gDist > gz.r*1.5 || a.escortProgress >= 1) {
+          setTimeout(()=>{ if(game.currentMinigame==='mochi_escort') triggerWisdom(a); },600);
+        }
+      } else {
+        playBwop();
+      }
+    }
+  }
+
+  // Camera follow
+  game.camera.x += (player.x - game.camera.x)*0.08;
+  game.camera.y += (player.y - game.camera.y)*0.08;
+  game.camera.x = Math.max(0, Math.min(WORLD.w, game.camera.x));
+  game.camera.y = Math.max(0, Math.min(WORLD.h, game.camera.y));
+
+  // Wisdom timer (only counts up for fade-in, never auto-closes)
+  if (game.state === 'wisdom') {
+    game.wisdomTimer += dt;
+    // No auto-close — player must click or press a key
+  }
+
+  // Whimper sounds
+  if (Math.random()<0.003 && game.state==='playing') {
+    for(const a of animals) {
+      if(!a.saved && Math.hypot(player.x-a.x,player.y-a.y)<300) {
+        playWhimper(); break;
+      }
+    }
+  }
+}
+
+// ============================================================
+// RENDER LOOP
+// ============================================================
+function render(time) {
+  ctx.clearRect(0,0,W(),H());
+  const t = time/1000;
+
+  if (game.state === 'ending') {
+    drawEndingScreen(t);
+    requestAnimationFrame(render);
+    return;
+  }
+
+  // Sky
+  drawSky(t);
+  drawOcean(t);
+
+  // World
+  if (game.state === 'playing' || game.currentMinigame === 'mochi_escort') {
+    drawIsland(t);
+    drawGloomZones(t);
+    drawRocks();
+    drawFlowers(t);
+    drawTrees(t);
+    drawBandAid(t);
+
+    // Draw animals
+    for (const a of animals) {
+      if (!a.saved || (a.saved && !player.companions.includes(a))) drawAnimal(a, t);
+    }
+
+    // Companions
+    drawCompanions(t);
+
+    // Player
+    drawPlayer(t);
+
+    // Particles
+    updateParticles(0.016);
+
+    // Sunset haze
+    const haze = getSunsetHaze();
+    if (haze > 0) {
+      ctx.save(); ctx.globalAlpha = haze;
+      const hazeGrad = ctx.createLinearGradient(0,H()*0.3,0,H());
+      hazeGrad.addColorStop(0,'rgba(255,150,80,0)');
+      hazeGrad.addColorStop(1,'rgba(255,100,50,0.3)');
+      ctx.fillStyle=hazeGrad; ctx.fillRect(0,H()*0.3,W(),H()*0.7);
+      ctx.restore();
+    }
+
+    // Night vignette
+    const isNight = game.timeOfDay > 0.8 || game.timeOfDay < 0.15;
+    if (isNight) {
+      const vAlpha = game.timeOfDay>0.8?(game.timeOfDay-0.8)/0.1:Math.max(0,(0.15-game.timeOfDay)/0.08);
+      ctx.save(); ctx.globalAlpha=Math.min(0.5,vAlpha);
+      const nvGrad = ctx.createRadialGradient(W()/2,H()/2,W()*0.2,W()/2,H()/2,W()*0.8);
+      nvGrad.addColorStop(0,'rgba(0,0,0,0)'); nvGrad.addColorStop(1,'rgba(5,2,20,1)');
+      ctx.fillStyle=nvGrad; ctx.fillRect(0,0,W(),H());
+      ctx.restore();
+    }
+
+    drawHUD();
+  }
+
+  // Minigames
+  if (game.currentMinigame === 'bird_wing') drawBirdMinigame(t);
+  if (game.currentMinigame === 'mochi_escort') { drawMochiMinigame(t); drawHUD(); }
+  if (game.currentMinigame === 'turtle_shell') { updateTurtleDrag(); drawTurtleMinigame(t); }
+  if (game.currentMinigame === 'fox_vines') drawFoxMinigame(t);
+
+  // Wisdom
+  if (game.state === 'wisdom') drawWisdomScreen(t);
+}
+
+function loop(ts) {
+  update(ts);
+  render(ts);
+  requestAnimationFrame(loop);
+}
+
+// ============================================================
+// START
+// ============================================================
+const startScreen = document.getElementById('startScreen');
+
+// Add stars to start screen
+for (let i=0; i<120; i++) {
+  const star = document.createElement('div');
+  star.className='star';
+  star.style.cssText=`width:${1+Math.random()*2}px;height:${1+Math.random()*2}px;left:${Math.random()*100}%;top:${Math.random()*100}%;animation-duration:${2+Math.random()*4}s;animation-delay:${Math.random()*4}s;`;
+  startScreen.appendChild(star);
+}
+
+function startGame() {
+  startScreen.style.transition='opacity 1s';
+  startScreen.style.opacity='0';
+  setTimeout(()=>startScreen.remove(),1000);
+  initAudio();
+  requestAnimationFrame(loop);
+}
+
+startScreen.addEventListener('click', startGame);
+startScreen.addEventListener('touchstart', (e)=>{e.preventDefault();startGame();},{passive:false});
+</script>
+</body>
+</html>
